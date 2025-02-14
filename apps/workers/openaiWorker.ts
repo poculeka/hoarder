@@ -16,7 +16,11 @@ import { readAsset } from "@hoarder/shared/assetdb";
 import serverConfig from "@hoarder/shared/config";
 import { InferenceClientFactory } from "@hoarder/shared/inference";
 import logger from "@hoarder/shared/logger";
-import { buildImagePrompt, buildTextPrompt } from "@hoarder/shared/prompts";
+import {
+  buildContentPromptFromTemplate,
+  buildPromptFromTemplate,
+  PromptTags,
+} from "@hoarder/shared/prompts";
 import {
   OpenAIQueue,
   triggerSearchReindex,
@@ -96,6 +100,8 @@ async function buildPrompt(
   bookmark: NonNullable<Awaited<ReturnType<typeof fetchBookmark>>>,
 ) {
   const prompts = await fetchCustomPrompts(bookmark.userId, "text");
+  const tags = await fetchTags(bookmark.userId);
+
   if (bookmark.link) {
     if (!bookmark.link.description && !bookmark.link.content) {
       throw new Error(
@@ -104,8 +110,10 @@ async function buildPrompt(
     }
 
     const content = bookmark.link.content;
-    return buildTextPrompt(
+    return buildContentPromptFromTemplate(
+      serverConfig.inference.taggingPrompt,
       serverConfig.inference.inferredTagLang,
+      tags,
       prompts,
       `URL: ${bookmark.link.url}
 Title: ${bookmark.link.title ?? ""}
@@ -116,8 +124,10 @@ Content: ${content ?? ""}`,
   }
 
   if (bookmark.text) {
-    return buildTextPrompt(
+    return buildContentPromptFromTemplate(
+      serverConfig.inference.taggingPrompt,
       serverConfig.inference.inferredTagLang,
+      tags,
       prompts,
       bookmark.text.text ?? "",
       serverConfig.inference.contextLength,
@@ -148,6 +158,7 @@ async function inferTagsFromImage(
     userId: bookmark.userId,
     assetId: bookmark.asset.assetId,
   });
+  const tags = await fetchTags(bookmark.userId);
 
   if (!asset) {
     throw new Error(
@@ -157,8 +168,10 @@ async function inferTagsFromImage(
 
   const base64 = asset.toString("base64");
   return inferenceClient.inferFromImage(
-    buildImagePrompt(
+    buildPromptFromTemplate(
+      serverConfig.inference.imagePrompt,
       serverConfig.inference.inferredTagLang,
+      tags,
       await fetchCustomPrompts(bookmark.userId, "images"),
     ),
     metadata.contentType,
@@ -181,47 +194,21 @@ async function fetchCustomPrompts(
     },
   });
 
-  let promptTexts = prompts.map((p) => p.text);
-  if (containsTagsPlaceholder(prompts)) {
-    promptTexts = await replaceTagsPlaceholders(promptTexts, userId);
-  }
-
-  return promptTexts;
+  return prompts.map((p) => p.text);
 }
 
-async function replaceTagsPlaceholders(
-  prompts: string[],
-  userId: string,
-): Promise<string[]> {
+async function fetchTags(userId: string): Promise<PromptTags> {
   const api = await buildImpersonatingTRPCClient(userId);
   const tags = (await api.tags.list()).tags;
-  const tagsString = `[${tags.map((tag) => tag.name).join(", ")}]`;
-  const aiTagsString = `[${tags
-    .filter((tag) => tag.numBookmarksByAttachedType.human ?? 0 == 0)
-    .map((tag) => tag.name)
-    .join(", ")}]`;
-  const userTagsString = `[${tags
-    .filter((tag) => tag.numBookmarksByAttachedType.human ?? 0 > 0)
-    .map((tag) => tag.name)
-    .join(", ")}]`;
-
-  return prompts.map((p) =>
-    p
-      .replaceAll("$tags", tagsString)
-      .replaceAll("$aiTags", aiTagsString)
-      .replaceAll("$userTags", userTagsString),
-  );
-}
-
-function containsTagsPlaceholder(prompts: { text: string }[]): boolean {
-  return (
-    prompts.filter(
-      (p) =>
-        p.text.includes("$tags") ||
-        p.text.includes("$aiTags") ||
-        p.text.includes("$userTags"),
-    ).length > 0
-  );
+  return {
+    all: tags.map((tag) => tag.name),
+    ai: tags
+      .filter((tag) => tag.numBookmarksByAttachedType.ai ?? 0 > 0)
+      .map((tag) => tag.name),
+    human: tags
+      .filter((tag) => tag.numBookmarksByAttachedType.human ?? 0 > 0)
+      .map((tag) => tag.name),
+  };
 }
 
 async function inferTagsFromPDF(
@@ -230,8 +217,11 @@ async function inferTagsFromPDF(
   inferenceClient: InferenceClient,
   abortSignal: AbortSignal,
 ) {
-  const prompt = buildTextPrompt(
+  const tags = await fetchTags(bookmark.userId);
+  const prompt = buildContentPromptFromTemplate(
+    serverConfig.inference.taggingPrompt,
     serverConfig.inference.inferredTagLang,
+    tags,
     await fetchCustomPrompts(bookmark.userId, "text"),
     `Content: ${bookmark.asset.content}`,
     serverConfig.inference.contextLength,
