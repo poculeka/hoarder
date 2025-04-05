@@ -80,7 +80,7 @@ class OpenAIInferenceClient implements InferenceClient {
           optsWithDefaults.schema &&
           serverConfig.inference.supportsStructuredOutput
             ? zodResponseFormat(optsWithDefaults.schema, "schema")
-            : undefined,
+            : { type: "json_object" },
       },
       {
         signal: optsWithDefaults.abortSignal,
@@ -190,7 +190,7 @@ class OllamaInferenceClient implements InferenceClient {
         optsWithDefaults.schema &&
         serverConfig.inference.supportsStructuredOutput
           ? zodToJsonSchema(optsWithDefaults.schema)
-          : undefined,
+          : { type: "json_object" },
       stream: true,
       keep_alive: serverConfig.inference.ollamaKeepAlive,
       options: {
